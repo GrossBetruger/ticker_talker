@@ -1,0 +1,12 @@
+[project]
+name = "ticker-talker"
+version = "0.1.0"
+description = "Compare normalized stock price actions across multiple tickers"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "yfinance>=0.2.0",
+    "matplotlib>=3.7.0",
+    "pandas>=2.0.0",
+    "flask>=3.0.0",
+]
