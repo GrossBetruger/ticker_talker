@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ticker Talker - Stock Price Comparison</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 Ticker Talker</h1>
+            <p class="subtitle">Compare normalized stock price actions across multiple tickers</p>
+        </header>
+
+        <div class="main-content">
+            <div class="input-panel">
+                <div class="card">
+                    <h2>Input Parameters</h2>
+                    
+                    <div class="form-group">
+                        <label for="tickers">Ticker Symbols</label>
+                        <input 
+                            type="text" 
+                            id="tickers" 
+                            placeholder="e.g., AAPL, MSFT, GOOGL, TSLA"
+                            value="AAPL, MSFT, GOOGL"
+                        >
+                        <small>Enter comma-separated ticker symbols</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Time Window</label>
+                        <div class="radio-group">
+                            <label class="radio-label">
+                                <input type="radio" name="timeWindow" value="period" checked>
+                                <span>Period</span>
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="timeWindow" value="dates">
+                                <span>Date Range</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div id="period-group" class="form-group">
+                        <label for="period">Period</label>
+                        <select id="period">
+                            <option value="1y">1 Year</option>
+                            <option value="6m">6 Months</option>
+                            <option value="3mo">3 Months</option>
+                            <option value="1mo">1 Month</option>
+                            <option value="5d">5 Days</option>
+                            <option value="1d">1 Day</option>
+                        </select>
+                    </div>
+
+                    <div id="dates-group" class="form-group" style="display: none;">
+                        <div class="date-inputs">
+                            <div>
+                                <label for="start-date">Start Date</label>
+                                <input type="date" id="start-date">
+                            </div>
+                            <div>
+                                <label for="end-date">End Date</label>
+                                <input type="date" id="end-date">
+                            </div>
+                        </div>
+                    </div>
+
+                    <button id="compare-btn" class="btn-primary">
+                        <span class="btn-text">Compare Tickers</span>
+                        <span class="btn-loader" style="display: none;">⏳ Loading...</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="results-panel">
+                <div id="error-message" class="error-message" style="display: none;"></div>
+                
+                <div id="chart-container" class="card" style="display: none;">
+                    <h2>Price Comparison Chart</h2>
+                    <div class="chart-wrapper">
+                        <canvas id="price-chart"></canvas>
+                    </div>
+                </div>
+
+                <div id="summary-container" class="card" style="display: none;">
+                    <h2>Summary Statistics</h2>
+                    <div id="summary-content"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
+
