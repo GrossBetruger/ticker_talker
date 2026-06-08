@@ -1,29 +1,109 @@
 """
 Ticker Talker - Compare normalized stock price actions across multiple tickers
 """
+import os
+os.environ["CURL_CA_BUNDLE"] = ""
+os.environ["REQUESTS_CA_BUNDLE"] = ""
+
 import yfinance as yf
+from curl_cffi.requests import Session as CffiSession
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
 from typing import List, Tuple, Optional
 import sys
 
+_session = CffiSession(verify=False, impersonate="chrome")
 
-def get_user_input() -> Tuple[List[str], datetime, datetime]:
+
+def _resolve_tase_security(security_id: str) -> str:
+    """Resolve a TASE security number to a yfinance ticker via ISIN lookup."""
+    import requests as _requests
+
+    tase_session = CffiSession(verify=False, impersonate="chrome")
+    tase_session.get("https://api.tase.co.il/api/")
+    tase_headers = {
+        "Accept": "application/json",
+        "Origin": "https://market.tase.co.il",
+        "Referer": "https://market.tase.co.il/",
+    }
+    resp = tase_session.get(
+        f"https://api.tase.co.il/api/company/securitydata?securityId={security_id}&lang=en",
+        headers=tase_headers,
+    )
+    if resp.status_code != 200:
+        print(f"  Error: TASE security {security_id} not found (HTTP {resp.status_code})")
+        sys.exit(1)
+
+    info = resp.json()
+    isin = info.get("ISIN")
+    if not isin:
+        print(f"  Error: No ISIN found for TASE security {security_id}")
+        sys.exit(1)
+
+    name = info.get("SecurityLongName") or info.get("Name", "")
+    print(f"  TASE {security_id}: {name} (ISIN {isin})")
+
+    yf_resp = _requests.get(
+        "https://query2.finance.yahoo.com/v1/finance/search",
+        params={"q": isin, "quotesCount": 10, "newsCount": 0},
+        headers={"User-Agent": "Mozilla/5.0"},
+        verify=False,
+        timeout=10,
+    )
+    quotes = yf_resp.json().get("quotes", [])
+    if not quotes:
+        print(f"  Error: TASE security {security_id} (ISIN {isin}) not found on Yahoo Finance")
+        sys.exit(1)
+
+    symbol = quotes[0]["symbol"]
+    print(f"  Resolved to Yahoo Finance ticker: {symbol}")
+    return symbol
+
+
+def resolve_tickers(raw_tickers: List[str]) -> Tuple[List[str], dict]:
+    """Resolve user-provided identifiers to yfinance ticker symbols.
+
+    Purely numeric identifiers are treated as TASE security numbers and
+    resolved via ISIN lookup through the TASE API + Yahoo Finance search.
+
+    Returns (yf_tickers, display_map) where display_map maps
+    yf_ticker -> original user input for chart labels / summaries.
+    """
+    yf_tickers = []
+    display_map = {}
+
+    for raw in raw_tickers:
+        if raw.isdigit():
+            yf_ticker = _resolve_tase_security(raw)
+        else:
+            yf_ticker = raw
+        yf_tickers.append(yf_ticker)
+        display_map[yf_ticker] = raw
+
+    return yf_tickers, display_map
+
+
+def get_user_input() -> Tuple[List[str], datetime, datetime, dict]:
     """Get ticker symbols and time window from user."""
     print("=" * 60)
     print("Ticker Talker - Stock Price Comparison Tool")
     print("=" * 60)
     
-    # Get ticker symbols
-    tickers_input = input("\nEnter ticker symbols (comma-separated, e.g., AAPL,MSFT,GOOGL): ").strip()
-    tickers = [ticker.strip().upper() for ticker in tickers_input.split(",") if ticker.strip()]
+    tickers_input = input("\nEnter ticker symbols or TASE security numbers (comma-separated, e.g., AAPL,MSFT,1159250): ").strip()
+    raw_tickers = [ticker.strip().upper() for ticker in tickers_input.split(",") if ticker.strip()]
     
-    if not tickers:
+    if not raw_tickers:
         print("Error: No ticker symbols provided!")
         sys.exit(1)
     
-    print(f"\nSelected tickers: {', '.join(tickers)}")
+    tickers, display_map = resolve_tickers(raw_tickers)
+    
+    resolved_info = [
+        f"{display_map[t]} -> {t}" if display_map[t] != t else t
+        for t in tickers
+    ]
+    print(f"\nSelected tickers: {', '.join(resolved_info)}")
     
     # Get time window
     print("\nTime window options:")
@@ -77,42 +157,57 @@ def get_user_input() -> Tuple[List[str], datetime, datetime]:
         print("Error: Invalid choice!")
         sys.exit(1)
     
-    return tickers, start_date, end_date
+    return tickers, start_date, end_date, display_map
 
 
 def download_price_data(tickers: List[str], start_date: datetime, end_date: datetime) -> pd.DataFrame:
     """Download price data for given tickers."""
+    import time
+
     print(f"\nDownloading price data from {start_date.date()} to {end_date.date()}...")
-    
-    all_data = {}
-    
-    for ticker in tickers:
+
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-            print(f"  Fetching {ticker}...", end=" ")
-            stock = yf.Ticker(ticker)
-            hist = stock.history(start=start_date, end=end_date)
-            
-            if hist.empty:
-                print(f"⚠ No data found")
-                continue
-            
-            # Use 'Close' price
-            all_data[ticker] = hist['Close']
-            print(f"✓ ({len(hist)} data points)")
-            
+            df = yf.download(
+                tickers,
+                start=start_date,
+                end=end_date,
+                session=_session,
+                progress=True,
+                threads=False,
+            )
         except Exception as e:
-            print(f"✗ Error: {e}")
-            continue
-    
-    if not all_data:
-        print("\nError: No data could be downloaded for any ticker!")
-        sys.exit(1)
-    
-    # Combine into a single DataFrame
-    df = pd.DataFrame(all_data)
-    
-    # Remove rows where all values are NaN
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  Error: {e}. Retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+            print(f"\nError: {e}")
+            sys.exit(1)
+
+        if df is not None and not df.empty:
+            break
+
+        if attempt < max_retries - 1:
+            wait = 2 ** (attempt + 1)
+            print(f"  Empty response, retrying in {wait}s...")
+            time.sleep(wait)
+        else:
+            print("\nError: No data could be downloaded for any ticker!")
+            sys.exit(1)
+
+    if len(tickers) == 1:
+        df = df[['Close']].rename(columns={'Close': tickers[0]})
+    else:
+        df = df['Close']
+
     df = df.dropna(how='all')
+
+    # Forward-fill per-ticker gaps caused by different exchange calendars
+    # (e.g. TASE is open Sun-Thu, NYSE Mon-Fri).
+    df = df.ffill()
+    df = df.dropna()
     
     return df
 
@@ -135,14 +230,15 @@ def normalize_prices(df: pd.DataFrame) -> pd.DataFrame:
     return normalized_df
 
 
-def visualize_comparison(df: pd.DataFrame, start_date: datetime, end_date: datetime):
+def visualize_comparison(df: pd.DataFrame, start_date: datetime, end_date: datetime, display_map: Optional[dict] = None):
     """Create visualization of normalized price comparison."""
     print("\nGenerating visualization...")
     
     plt.figure(figsize=(14, 8))
     
     for ticker in df.columns:
-        plt.plot(df.index, df[ticker], label=ticker, linewidth=2, alpha=0.8)
+        label = (display_map or {}).get(ticker, ticker)
+        plt.plot(df.index, df[ticker], label=label, linewidth=2, alpha=0.8)
     
     plt.axhline(y=100, color='gray', linestyle='--', linewidth=1, alpha=0.5, label='Baseline (100%)')
     
@@ -170,7 +266,7 @@ def visualize_comparison(df: pd.DataFrame, start_date: datetime, end_date: datet
     plt.show()
 
 
-def print_summary(df: pd.DataFrame, normalized_df: pd.DataFrame):
+def print_summary(df: pd.DataFrame, normalized_df: pd.DataFrame, display_map: Optional[dict] = None):
     """Print summary statistics."""
     print("\n" + "=" * 60)
     print("SUMMARY STATISTICS")
@@ -184,7 +280,8 @@ def print_summary(df: pd.DataFrame, normalized_df: pd.DataFrame):
             end_normalized = normalized_df[ticker].iloc[-1]
             change_pct = end_normalized - start_normalized
             
-            print(f"\n{ticker}:")
+            display_name = (display_map or {}).get(ticker, ticker)
+            print(f"\n{display_name}:")
             print(f"  Starting Price: ${start_price:.2f}")
             print(f"  Ending Price:   ${end_price:.2f}")
             print(f"  Normalized Start: {start_normalized:.2f}%")
@@ -200,7 +297,7 @@ def main():
     """Main application entry point."""
     try:
         # Get user input
-        tickers, start_date, end_date = get_user_input()
+        tickers, start_date, end_date, display_map = get_user_input()
         
         # Download price data
         price_df = download_price_data(tickers, start_date, end_date)
@@ -213,10 +310,10 @@ def main():
         normalized_df = normalize_prices(price_df)
         
         # Print summary
-        print_summary(price_df, normalized_df)
+        print_summary(price_df, normalized_df, display_map)
         
         # Visualize
-        visualize_comparison(normalized_df, start_date, end_date)
+        visualize_comparison(normalized_df, start_date, end_date, display_map)
         
         print("\n" + "=" * 60)
         print("Analysis complete!")

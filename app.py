@@ -1,44 +1,137 @@
 """
 Flask web application for Ticker Talker
 """
+import os
+os.environ["CURL_CA_BUNDLE"] = ""
+os.environ["REQUESTS_CA_BUNDLE"] = ""
+
 from flask import Flask, render_template, request, jsonify
 import yfinance as yf
+from curl_cffi.requests import Session as CffiSession
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import traceback
+import math
+
+_session = CffiSession(verify=False, impersonate="chrome")
 
 app = Flask(__name__)
 
 
+def _resolve_tase_security(security_id: str) -> str:
+    """Resolve a TASE security number to a yfinance ticker via ISIN lookup.
+
+    1. Query the TASE market API for the security's ISIN.
+    2. Search Yahoo Finance for that ISIN.
+    3. Return the first matching yfinance ticker.
+    """
+    import requests as _requests
+
+    tase_session = CffiSession(verify=False, impersonate="chrome")
+    tase_session.get("https://api.tase.co.il/api/")
+    tase_headers = {
+        "Accept": "application/json",
+        "Origin": "https://market.tase.co.il",
+        "Referer": "https://market.tase.co.il/",
+    }
+    resp = tase_session.get(
+        f"https://api.tase.co.il/api/company/securitydata?securityId={security_id}&lang=en",
+        headers=tase_headers,
+    )
+    if resp.status_code != 200:
+        raise ValueError(f"TASE security {security_id} not found (HTTP {resp.status_code})")
+
+    info = resp.json()
+    isin = info.get("ISIN")
+    if not isin:
+        raise ValueError(f"No ISIN found for TASE security {security_id}")
+
+    yf_resp = _requests.get(
+        "https://query2.finance.yahoo.com/v1/finance/search",
+        params={"q": isin, "quotesCount": 10, "newsCount": 0},
+        headers={"User-Agent": "Mozilla/5.0"},
+        verify=False,
+        timeout=10,
+    )
+    quotes = yf_resp.json().get("quotes", [])
+    if not quotes:
+        raise ValueError(
+            f"TASE security {security_id} (ISIN {isin}) not found on Yahoo Finance"
+        )
+
+    return quotes[0]["symbol"]
+
+
+def resolve_tickers(raw_tickers: List[str]) -> tuple[List[str], Dict[str, str]]:
+    """Resolve user-provided identifiers to yfinance ticker symbols.
+
+    Purely numeric identifiers are treated as TASE security numbers and
+    resolved via ISIN lookup through the TASE API + Yahoo Finance search.
+
+    Returns (yf_tickers, display_map) where display_map maps
+    yf_ticker -> original user input for chart labels / summaries.
+    """
+    yf_tickers = []
+    display_map: Dict[str, str] = {}
+
+    for raw in raw_tickers:
+        if raw.isdigit():
+            yf_ticker = _resolve_tase_security(raw)
+        else:
+            yf_ticker = raw
+        yf_tickers.append(yf_ticker)
+        display_map[yf_ticker] = raw
+
+    return yf_tickers, display_map
+
+
 def download_price_data(tickers: List[str], start_date: datetime, end_date: datetime) -> pd.DataFrame:
     """Download price data for given tickers."""
-    all_data = {}
-    
-    for ticker in tickers:
+    import time
+
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(start=start_date, end=end_date)
-            
-            if hist.empty:
-                continue
-            
-            # Use 'Close' price
-            all_data[ticker] = hist['Close']
-            
+            df = yf.download(
+                tickers,
+                start=start_date,
+                end=end_date,
+                session=_session,
+                progress=False,
+                threads=False,
+            )
         except Exception as e:
-            print(f"Error fetching {ticker}: {e}")
-            continue
-    
-    if not all_data:
-        raise ValueError("No data could be downloaded for any ticker!")
-    
-    # Combine into a single DataFrame
-    df = pd.DataFrame(all_data)
-    
-    # Remove rows where all values are NaN
+            if attempt < max_retries - 1:
+                time.sleep(2 ** (attempt + 1))
+                continue
+            raise
+
+        if df is not None and not df.empty:
+            break
+
+        if attempt < max_retries - 1:
+            print(f"Retry {attempt + 1}/{max_retries} after empty response...")
+            time.sleep(2 ** (attempt + 1))
+        else:
+            raise ValueError("No data could be downloaded for any ticker!")
+
+    if len(tickers) == 1:
+        df = df[['Close']].rename(columns={'Close': tickers[0]})
+    else:
+        df = df['Close']
+
     df = df.dropna(how='all')
-    
+
+    if df.empty:
+        raise ValueError("No data could be downloaded for any ticker!")
+
+    # Forward-fill per-ticker gaps caused by different exchange calendars
+    # (e.g. TASE is open Sun-Thu, NYSE Mon-Fri).
+    df = df.ffill()
+    # Drop any leading rows that still have NaN (before the first trade of a ticker)
+    df = df.dropna()
+
     return df
 
 
@@ -58,6 +151,14 @@ def normalize_prices(df: pd.DataFrame) -> pd.DataFrame:
     return normalized_df
 
 
+def _safe_float(val) -> Optional[float]:
+    """Convert to float, replacing NaN/Inf with None (JSON null)."""
+    f = float(val)
+    if math.isfinite(f):
+        return f
+    return None
+
+
 def get_summary_stats(df: pd.DataFrame, normalized_df: pd.DataFrame) -> Dict:
     """Calculate summary statistics for each ticker."""
     summary = {}
@@ -72,12 +173,12 @@ def get_summary_stats(df: pd.DataFrame, normalized_df: pd.DataFrame) -> Dict:
             actual_return = ((end_price - start_price) / start_price) * 100
             
             summary[ticker] = {
-                'start_price': float(start_price),
-                'end_price': float(end_price),
-                'start_normalized': float(start_normalized),
-                'end_normalized': float(end_normalized),
-                'change_pct': float(change_pct),
-                'actual_return': float(actual_return)
+                'start_price': _safe_float(start_price),
+                'end_price': _safe_float(end_price),
+                'start_normalized': _safe_float(start_normalized),
+                'end_normalized': _safe_float(end_normalized),
+                'change_pct': _safe_float(change_pct),
+                'actual_return': _safe_float(actual_return)
             }
     
     return summary
@@ -94,10 +195,12 @@ def compare_tickers():
     """API endpoint to compare tickers."""
     try:
         data = request.get_json()
-        tickers = [t.strip().upper() for t in data.get('tickers', '').split(',') if t.strip()]
+        raw_tickers = [t.strip().upper() for t in data.get('tickers', '').split(',') if t.strip()]
         
-        if not tickers:
+        if not raw_tickers:
             return jsonify({'error': 'No ticker symbols provided'}), 400
+        
+        tickers, display_map = resolve_tickers(raw_tickers)
         
         # Parse time window
         time_window_type = data.get('time_window_type', 'period')
@@ -165,8 +268,8 @@ def compare_tickers():
         
         for idx, ticker in enumerate(normalized_df.columns):
             chart_data['datasets'].append({
-                'label': ticker,
-                'data': [float(val) for val in normalized_df[ticker].values],
+                'label': display_map.get(ticker, ticker),
+                'data': [_safe_float(val) for val in normalized_df[ticker].values],
                 'borderColor': colors[idx % len(colors)],
                 'backgroundColor': colors[idx % len(colors)] + '20',
                 'borderWidth': 2,
@@ -174,10 +277,14 @@ def compare_tickers():
                 'tension': 0.1
             })
         
+        display_summary = {
+            display_map.get(k, k): v for k, v in summary.items()
+        }
+        
         return jsonify({
             'success': True,
             'chart_data': chart_data,
-            'summary': summary,
+            'summary': display_summary,
             'start_date': start_date.strftime('%Y-%m-%d'),
             'end_date': end_date.strftime('%Y-%m-%d')
         })
