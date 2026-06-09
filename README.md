@@ -12,44 +12,20 @@ A Python application that downloads stock price data for multiple ticker symbols
 - 🇮🇱 **TASE security number support** — enter numeric TASE identifiers (e.g., `1159250`) and they are automatically resolved to Yahoo Finance tickers via ISIN lookup through the TASE API
 - 🌍 **Cross-exchange comparison** — compare tickers from different exchanges (e.g., NYSE + TASE) with automatic forward-fill for non-overlapping trading calendars
 
-## Installation
-
-1. Install dependencies:
-```bash
-pip install -e .
-```
-
-Or install dependencies directly:
-```bash
-pip install yfinance matplotlib pandas flask
-```
-
 ## Usage
 
 ### Web GUI (Recommended)
 
-Start the web server:
 ```bash
-python app.py
+uv run app.py
 ```
 
-Then open your browser and navigate to:
-```
-http://localhost:5000
-```
-
-The web interface provides:
-- 🎨 Modern, responsive UI
-- 📊 Interactive charts with Chart.js
-- 📱 Mobile-friendly design
-- ⚡ Real-time data fetching
-- 📈 Beautiful visualizations
+Then open http://localhost:5000.
 
 ### Command Line Interface
 
-Run the command-line application:
 ```bash
-python main.py
+uv run main.py
 ```
 
 The application will prompt you for:
