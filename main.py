@@ -162,40 +162,21 @@ def get_user_input() -> Tuple[List[str], datetime, datetime, dict]:
 
 def download_price_data(tickers: List[str], start_date: datetime, end_date: datetime) -> pd.DataFrame:
     """Download price data for given tickers."""
-    import time
-
     print(f"\nDownloading price data from {start_date.date()} to {end_date.date()}...")
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            df = yf.download(
-                tickers,
-                start=start_date,
-                end=end_date,
-                session=_session,
-                progress=True,
-                threads=False,
-            )
-        except Exception as e:
-            if attempt < max_retries - 1:
-                wait = 2 ** (attempt + 1)
-                print(f"  Error: {e}. Retrying in {wait}s...")
-                time.sleep(wait)
-                continue
-            print(f"\nError: {e}")
-            sys.exit(1)
+    df = yf.download(
+        tickers,
+        start=start_date,
+        end=end_date,
+        session=_session,
+        progress=True,
+        threads=False,
+        auto_adjust=True,
+    )
 
-        if df is not None and not df.empty:
-            break
-
-        if attempt < max_retries - 1:
-            wait = 2 ** (attempt + 1)
-            print(f"  Empty response, retrying in {wait}s...")
-            time.sleep(wait)
-        else:
-            print("\nError: No data could be downloaded for any ticker!")
-            sys.exit(1)
+    if df is None or df.empty:
+        print("\nError: No data could be downloaded for any ticker!")
+        sys.exit(1)
 
     if len(tickers) == 1:
         df = df[['Close']].rename(columns={'Close': tickers[0]})

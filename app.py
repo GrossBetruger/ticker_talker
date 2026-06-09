@@ -88,33 +88,18 @@ def resolve_tickers(raw_tickers: List[str]) -> tuple[List[str], Dict[str, str]]:
 
 def download_price_data(tickers: List[str], start_date: datetime, end_date: datetime) -> pd.DataFrame:
     """Download price data for given tickers."""
-    import time
+    df = yf.download(
+        tickers,
+        start=start_date,
+        end=end_date,
+        session=_session,
+        progress=False,
+        threads=False,
+        auto_adjust=True,
+    )
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            df = yf.download(
-                tickers,
-                start=start_date,
-                end=end_date,
-                session=_session,
-                progress=False,
-                threads=False,
-            )
-        except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(2 ** (attempt + 1))
-                continue
-            raise
-
-        if df is not None and not df.empty:
-            break
-
-        if attempt < max_retries - 1:
-            print(f"Retry {attempt + 1}/{max_retries} after empty response...")
-            time.sleep(2 ** (attempt + 1))
-        else:
-            raise ValueError("No data could be downloaded for any ticker!")
+    if df is None or df.empty:
+        raise ValueError("No data could be downloaded for any ticker!")
 
     if len(tickers) == 1:
         df = df[['Close']].rename(columns={'Close': tickers[0]})
